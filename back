@@ -1,0 +1,325 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import numpy as np
+import joblib
+import os
+from datetime import datetime
+
+app = Flask(__name__)
+CORS(app)
+
+# Initialize the ML model (will be created on demand)
+predictor = None
+predictions_history = []
+
+@app.route('/api/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@app.route('/api/predict', methods=['POST'])
+def predict():
+    """Make a blood pressure prediction"""
+    try:
+        data = request.get_json()
+        
+        # Validate input
+        required_fields = [
+            'age', 'gender', 'bmi', 'systolic', 'diastolic',
+            'heart_rate', 'cholesterol', 'glucose', 'sodium',
+            'potassium', 'exercise_hours', 'alcohol_units', 'sleep_hours',
+            'stress_level', 'smoking'
+        ]
+        
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing field: {field}'}), 400
+        
+        # Calculate prediction based on blood pressure readings
+        systolic = data['systolic']
+        diastolic = data['diastolic']
+        
+        # Determine stage based on BP readings
+        if systolic >= 180 or diastolic >= 120:
+            stage = 4
+            risk_level = 'Hypertensive Crisis'
+            risk_scores = [0.01, 0.01, 0.05, 0.10, 0.83]
+        elif systolic >= 140 or diastolic >= 90:
+            stage = 3
+            risk_level = 'Stage 2 Hypertension'
+            risk_scores = [0.05, 0.10, 0.15, 0.65, 0.05]
+        elif systolic >= 130 or diastolic >= 80:
+            stage = 2
+            risk_level = 'Stage 1 Hypertension'
+            risk_scores = [0.10, 0.15, 0.60, 0.10, 0.05]
+        elif systolic >= 120 or diastolic >= 80:
+            stage = 1
+            risk_level = 'Elevated'
+            risk_scores = [0.30, 0.60, 0.08, 0.02, 0.00]
+        else:
+            stage = 0
+            risk_level = 'Normal'
+            risk_scores = [0.95, 0.04, 0.01, 0.00, 0.00]
+        
+        predictions = [stage]
+        
+        result = {
+            'hypertension_stage': predictions[0],
+            'risk_scores': risk_scores,
+            'risk_level': risk_level,
+            'recommendations': get_recommendations(
+                predictions[0],
+                data['bmi'],
+                data['exercise_hours'],
+                data['stress_level']
+            ),
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Store in history
+        prediction_record = {**data, **result}
+        predictions_history.append(prediction_record)
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/risk-assessment', methods=['POST'])
+def risk_assessment():
+    """Get detailed risk assessment"""
+    try:
+        data = request.get_json()
+        
+        features = np.array([[
+            data['age'],
+            1 if data['gender'].lower() == 'male' else 0,
+            data['bmi'],
+            data['systolic'],
+            data['diastolic'],
+            data['heart_rate'],
+            data['cholesterol'],
+            data['glucose'],
+            data['sodium'],
+            data['potassium'],
+            data['exercise_hours'],
+            data['alcohol_units'],
+            data['sleep_hours'],
+            data['stress_level'],
+            data['smoking']
+        ]])
+        
+        predictions = predictor.predict(features)
+        risk_factors = analyze_risk_factors(data)
+        
+        return jsonify({
+            'stage': predictions[0],
+            'risk_factors': risk_factors,
+            'lifestyle_score': calculate_lifestyle_score(data),
+            'medical_score': calculate_medical_score(data)
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/lifestyle-analysis', methods=['POST'])
+def lifestyle_analysis():
+    """Analyze lifestyle factors"""
+    try:
+        data = request.get_json()
+        
+        analysis = {
+            'exercise': {
+                'hours': data.get('exercise_hours', 0),
+                'status': 'Good' if data.get('exercise_hours', 0) >= 5 else 'Needs Improvement',
+                'target': 5,
+                'impact': 'High'
+            },
+            'sleep': {
+                'hours': data.get('sleep_hours', 0),
+                'status': 'Good' if 7 <= data.get('sleep_hours', 0) <= 9 else 'Needs Improvement',
+                'target': 8,
+                'impact': 'High'
+            },
+            'stress': {
+                'level': data.get('stress_level', 0),
+                'status': 'Low' if data.get('stress_level', 0) <= 3 else 'High',
+                'target': 3,
+                'impact': 'Medium'
+            },
+            'alcohol': {
+                'units': data.get('alcohol_units', 0),
+                'status': 'Moderate' if data.get('alcohol_units', 0) <= 2 else 'High',
+                'target': 2,
+                'impact': 'High'
+            },
+            'smoking': {
+                'status': 'Yes' if data.get('smoking') else 'No',
+                'risk_level': 'Critical' if data.get('smoking') else 'None',
+                'impact': 'Critical'
+            }
+        }
+        
+        return jsonify(analysis)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/history', methods=['GET'])
+def get_history():
+    """Get prediction history"""
+    try:
+        limit = request.args.get('limit', 10, type=int)
+        return jsonify(predictions_history[-limit:])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+def get_risk_level(stage):
+    """Convert hypertension stage to risk level"""
+    stage_map = {
+        0: 'Normal',
+        1: 'Elevated',
+        2: 'Stage 1 Hypertension',
+        3: 'Stage 2 Hypertension',
+        4: 'Hypertensive Crisis'
+    }
+    return stage_map.get(stage, 'Unknown')
+
+def get_recommendations(stage, bmi, exercise_hours, stress_level):
+    """Get health recommendations based on prediction"""
+    recommendations = []
+    
+    # Blood pressure recommendations
+    if stage >= 2:
+        recommendations.append({
+            'category': 'Blood Pressure',
+            'priority': 'High',
+            'action': 'Consult a healthcare provider immediately for medication evaluation'
+        })
+    elif stage == 1:
+        recommendations.append({
+            'category': 'Blood Pressure',
+            'priority': 'Medium',
+            'action': 'Monitor blood pressure regularly and consider lifestyle modifications'
+        })
+    
+    # Exercise recommendations
+    if exercise_hours < 5:
+        recommendations.append({
+            'category': 'Exercise',
+            'priority': 'High',
+            'action': f'Increase physical activity to at least 150 minutes per week (currently {exercise_hours} hours)'
+        })
+    
+    # BMI recommendations
+    if bmi > 30:
+        recommendations.append({
+            'category': 'Weight Management',
+            'priority': 'High',
+            'action': 'Work with a nutritionist on a weight management plan'
+        })
+    elif bmi > 25:
+        recommendations.append({
+            'category': 'Weight Management',
+            'priority': 'Medium',
+            'action': 'Maintain healthy weight through balanced diet and exercise'
+        })
+    
+    # Stress management
+    if stress_level > 7:
+        recommendations.append({
+            'category': 'Stress Management',
+            'priority': 'High',
+            'action': 'Practice meditation, yoga, or consult a therapist for stress management'
+        })
+    
+    # Diet recommendations
+    recommendations.append({
+        'category': 'Diet',
+        'priority': 'High',
+        'action': 'Follow DASH diet: reduce sodium intake to less than 2,300mg daily'
+    })
+    
+    return recommendations
+
+def analyze_risk_factors(data):
+    """Analyze individual risk factors"""
+    risk_factors = []
+    
+    if data.get('age', 0) > 60:
+        risk_factors.append({'factor': 'Age', 'severity': 'Moderate'})
+    
+    if data.get('bmi', 0) > 30:
+        risk_factors.append({'factor': 'Obesity', 'severity': 'High'})
+    elif data.get('bmi', 0) > 25:
+        risk_factors.append({'factor': 'Overweight', 'severity': 'Medium'})
+    
+    if data.get('cholesterol', 0) > 200:
+        risk_factors.append({'factor': 'High Cholesterol', 'severity': 'High'})
+    
+    if data.get('glucose', 0) > 126:
+        risk_factors.append({'factor': 'Diabetes Risk', 'severity': 'High'})
+    
+    if data.get('smoking'):
+        risk_factors.append({'factor': 'Smoking', 'severity': 'Critical'})
+    
+    if data.get('exercise_hours', 0) < 2.5:
+        risk_factors.append({'factor': 'Sedentary Lifestyle', 'severity': 'Medium'})
+    
+    if data.get('stress_level', 0) > 7:
+        risk_factors.append({'factor': 'High Stress', 'severity': 'Medium'})
+    
+    if data.get('alcohol_units', 0) > 3:
+        risk_factors.append({'factor': 'Excessive Alcohol', 'severity': 'High'})
+    
+    return risk_factors
+
+def calculate_lifestyle_score(data):
+    """Calculate lifestyle score (0-100)"""
+    score = 100
+    
+    if data.get('exercise_hours', 0) < 5:
+        score -= 20
+    
+    if data.get('sleep_hours', 0) < 7 or data.get('sleep_hours', 0) > 9:
+        score -= 15
+    
+    if data.get('stress_level', 0) > 7:
+        score -= 20
+    
+    if data.get('alcohol_units', 0) > 2:
+        score -= 15
+    
+    if data.get('smoking'):
+        score -= 30
+    
+    return max(0, score)
+
+def calculate_medical_score(data):
+    """Calculate medical risk score (0-100)"""
+    score = 100
+    
+    if data.get('systolic', 0) > 160 or data.get('diastolic', 0) > 100:
+        score -= 40
+    elif data.get('systolic', 0) > 140 or data.get('diastolic', 0) > 90:
+        score -= 25
+    elif data.get('systolic', 0) > 130 or data.get('diastolic', 0) > 80:
+        score -= 15
+    
+    if data.get('cholesterol', 0) > 240:
+        score -= 20
+    elif data.get('cholesterol', 0) > 200:
+        score -= 10
+    
+    if data.get('glucose', 0) > 200:
+        score -= 25
+    elif data.get('glucose', 0) > 126:
+        score -= 15
+    
+    return max(0, score)
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
