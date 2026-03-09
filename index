@@ -1,0 +1,36 @@
+import React, { useState } from 'react';
+import './App.css';
+import Header from './components/Header';
+import Dashboard from './pages/Dashboard';
+import PredictionForm from './pages/PredictionForm';
+import RiskAssessment from './pages/RiskAssessment';
+import LifestyleAnalysis from './pages/LifestyleAnalysis';
+import History from './pages/History';
+
+function App() {
+  const [currentPage, setCurrentPage] = useState('dashboard');
+  const [predictions, setPredictions] = useState([]);
+
+  const handleNavigation = (page) => {
+    setCurrentPage(page);
+  };
+
+  const addPrediction = (prediction) => {
+    setPredictions([...predictions, prediction]);
+  };
+
+  return (
+    <div className="app">
+      <Header onNavigate={handleNavigation} currentPage={currentPage} />
+      <main className="main-content">
+        {currentPage === 'dashboard' && <Dashboard />}
+        {currentPage === 'prediction' && <PredictionForm onPredictionMade={addPrediction} />}
+        {currentPage === 'risk-assessment' && <RiskAssessment />}
+        {currentPage === 'lifestyle' && <LifestyleAnalysis />}
+        {currentPage === 'history' && <History predictions={predictions} />}
+      </main>
+    </div>
+  );
+}
+
+export default App;
